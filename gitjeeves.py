@@ -8,7 +8,7 @@ from chromadb.utils.embedding_functions import HuggingFaceEmbeddingFunction
 from tqdm import tqdm
 
 # Constants for model and vector database
-MODEL_NAME = "meta-llama/Llama-3b"
+MODEL_NAME = "meta-llama/Meta-Llama-3.1-70B-Instruct"
 DB_PATH = "vector_db.pkl"
 
 # Function to load the model and tokenizer
