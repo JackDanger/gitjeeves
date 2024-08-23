@@ -2,24 +2,25 @@ import os
 import argparse
 import pickle
 from git import Repo
-from transformers import LlamaTokenizer, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from chromadb import Client
 from chromadb.utils.embedding_functions import HuggingFaceEmbeddingFunction
 from tqdm import tqdm
 
-# Initialize Llama3
-tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-3b")
-model = LlamaForCausalLM.from_pretrained("meta-llama/Llama-3b")
-
-# Initialize Vector DB
-client = Client()
-embedding_function = HuggingFaceEmbeddingFunction("meta-llama/Llama-3b")
-
-# File for storing and loading embeddings
+# Constants for model and vector database
+MODEL_NAME = "meta-llama/Llama-3b"
 DB_PATH = "vector_db.pkl"
 
+# Function to load the model and tokenizer
+def load_model_and_tokenizer(model_name):
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+    return tokenizer, model
+
 # Function to ingest Git repos and store embeddings
-def ingest_repo(repo_dir, db_path=DB_PATH):
+def ingest_repo(repo_dir, tokenizer, model, db_path=DB_PATH):
+    client = Client()
+    embedding_function = HuggingFaceEmbeddingFunction(MODEL_NAME)
     collection = client.create_collection("git_repos", embedding_function=embedding_function)
     
     repo = Repo(repo_dir)
@@ -49,7 +50,7 @@ def load_vector_db(db_path=DB_PATH):
         return pickle.load(f)
 
 # Enhanced Querying for Specific Use Cases
-def query_repo(query, collection):
+def query_repo(query, collection, tokenizer, model):
     query_tokens = tokenizer(query, return_tensors="pt")
     query_embedding = model(**query_tokens).last_hidden_state.mean(dim=1).detach().numpy()
     results = collection.query(embeddings=query_embedding, top_k=5)
@@ -71,13 +72,16 @@ def main():
     
     args = parser.parse_args()
     
+    # Load the model and tokenizer
+    tokenizer, model = load_model_and_tokenizer(MODEL_NAME)
+    
     if args.train:
         # Train mode
         repo_directory = args.train
         repos = [os.path.join(repo_directory, repo_name) for repo_name in os.listdir(repo_directory)]
         
         for repo_path in tqdm(repos, desc="Processing Repositories"):
-            ingest_repo(repo_path)
+            ingest_repo(repo_path, tokenizer, model)
         print("Training complete. Vector database saved to:", DB_PATH)
     
     elif args.serve:
@@ -96,7 +100,7 @@ def main():
                     query_lines.append(line)
                 query = "\n".join(query_lines)
                 
-                results = query_repo(query, collection)
+                results = query_repo(query, collection, tokenizer, model)
                 if results:
                     for result in results:
                         print(f"File: {result['file']}, Commit: {result['commit']}, Author: {result['author']}")
