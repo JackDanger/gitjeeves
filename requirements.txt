@@ -1,4 +1,5 @@
-transformers
-tqdm
-chromadb
 GitPython
+chromadb
+torch
+tqdm
+transformers

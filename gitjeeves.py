@@ -3,21 +3,25 @@ import sys
 import torch
 import argparse
 from git import Repo
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from chromadb import Client
+from transformers import AutoTokenizer, AutoModel
+from chromadb import PersistentClient
 from chromadb.utils.embedding_functions import HuggingFaceEmbeddingFunction
 from chromadb.config import Settings
 from tqdm import tqdm
+
 
 # Constants for model and vector database
 MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 PERSIST_DIRECTORY = "./chroma_db"  # Directory where Chroma's SQLite DB files will be stored
 
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # Function to load the model and tokenizer
 def load_model_and_tokenizer(model_name):
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
         return tokenizer, model
     except OSError as e:
         print(e)
@@ -26,13 +30,9 @@ def load_model_and_tokenizer(model_name):
 
 # Function to ingest Git repos and store embeddings
 def ingest_repo(repo_dir, tokenizer, model):
-    settings = Settings(
-        chroma_db_impl="sqlite", 
-        persist_directory=PERSIST_DIRECTORY
-    )
-    client = Client(settings)
+    client = PersistentClient()
     embedding_function = HuggingFaceEmbeddingFunction(MODEL_NAME)
-    collection = client.create_collection("git_repos", embedding_function=embedding_function)
+    collection = client.get_or_create_collection("git_repos", embedding_function=embedding_function)
 
     repo = Repo(repo_dir)
     commits = list(repo.iter_commits())
@@ -43,7 +43,7 @@ def ingest_repo(repo_dir, tokenizer, model):
     if existing_metadata:
         processed_commits = {metadata["commit"] for metadata in existing_metadata["metadatas"]}
 
-    for commit in tqdm(commits, desc="Processing Commits"):
+    for commit in tqdm(commits, desc=f"Commits for {os.path.basename(repo_dir)}"):
         if commit.hexsha in processed_commits:
             continue  # Skip already processed commits
 
@@ -56,12 +56,12 @@ def ingest_repo(repo_dir, tokenizer, model):
                 # Tokenize and embed file content
                 tokens = tokenizer(code, return_tensors="pt")
                 embeddings = model(**tokens).last_hidden_state.mean(dim=1).detach().numpy()
+                # Create a unique ID
+                unique_id = f"{commit.hexsha}_{file_path}"
                 # Store in vector DB with metadata
-                collection.add(embeddings=embeddings, 
+                collection.add(ids=[unique_id],  # Unique ID required
+                               embeddings=embeddings, 
                                metadatas={"author": author, "file": file_path, "commit": commit.hexsha, "code": code})
-
-    # Persist the collection
-    client.persist()
 
 # Function to load the vector database
 def load_vector_db():
@@ -133,6 +133,7 @@ def main():
             except EOFError:
                 print("\nExiting serve mode.")
                 break
+
 
 if __name__ == "__main__":
     main()
