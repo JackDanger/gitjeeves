@@ -6,14 +6,12 @@ from git import Repo
 from transformers import AutoTokenizer, AutoModel
 from chromadb import PersistentClient
 from chromadb.utils.embedding_functions import HuggingFaceEmbeddingFunction
-from chromadb.config import Settings
 from tqdm import tqdm
-
+import radon.complexity as radon_cc  # For calculating cyclomatic complexity
+import difflib  # For calculating code churn
 
 # Constants for model and vector database
 MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-PERSIST_DIRECTORY = "./chroma_db"  # Directory where Chroma's SQLite DB files will be stored
-
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -27,6 +25,16 @@ def load_model_and_tokenizer(model_name):
         print(e)
         print("Try: huggingface-cli login")
         sys.exit(1)
+
+# Function to calculate cyclomatic complexity
+def calculate_complexity(code):
+    complexity = radon_cc.cc_visit(code)
+    return sum(cyclo.complexity for cyclo in complexity)
+
+# Function to calculate code churn
+def calculate_code_churn(old_code, new_code):
+    diff = difflib.ndiff(old_code.splitlines(), new_code.splitlines())
+    return sum(1 for line in diff if line.startswith('+') or line.startswith('-'))
 
 # Function to ingest Git repos and store embeddings
 def ingest_repo(repo_dir, tokenizer, model):
@@ -43,25 +51,58 @@ def ingest_repo(repo_dir, tokenizer, model):
     if existing_metadata:
         processed_commits = {metadata["commit"] for metadata in existing_metadata["metadatas"]}
 
+    # Track previous file versions for code churn calculation
+    file_versions = {}
+
     for commit in tqdm(commits, desc=f"Commits for {os.path.basename(repo_dir)}"):
         if commit.hexsha in processed_commits:
             continue  # Skip already processed commits
 
         author = commit.author.name
+        author_email = commit.author.email
+        files_changed_in_commit = []
+
         for file in commit.stats.files:
             file_path = os.path.join(repo_dir, file)
             if os.path.exists(file_path) and file_path.endswith(".py"):
                 with open(file_path, "r") as f:
                     code = f.read()
+
+                # Calculate cyclomatic complexity
+                complexity = calculate_complexity(code)
+
+                # Calculate code churn if there's a previous version
+                churn = calculate_code_churn(file_versions.get(file_path, ""), code)
+                file_versions[file_path] = code  # Update the file version
+
                 # Tokenize and embed file content
                 tokens = tokenizer(code, return_tensors="pt")
                 embeddings = model(**tokens).last_hidden_state.mean(dim=1).detach().numpy()
+
                 # Create a unique ID
                 unique_id = f"{commit.hexsha}_{file_path}"
+
+                # Collect metadata
+                metadata = {
+                    "author": author,
+                    "author_email": author_email,
+                    "file": file_path,
+                    "commit": commit.hexsha,
+                    "code": code,
+                    "complexity": complexity,
+                    "churn": churn,
+                    "commit_message": commit.message,
+                    "date": commit.committed_datetime.isoformat(),
+                }
+
+                # Add relationships between files in the same commit
+                for related_file in files_changed_in_commit:
+                    metadata[f"related_file_{related_file}"] = True
+                files_changed_in_commit.append(file_path)
+
                 # Store in vector DB with metadata
-                collection.add(ids=[unique_id],  # Unique ID required
-                               embeddings=embeddings, 
-                               metadatas={"author": author, "file": file_path, "commit": commit.hexsha, "code": code})
+                collection.add(ids=[unique_id], embeddings=embeddings, metadatas=metadata)
+
 
 # Function to load the vector database
 def load_vector_db():

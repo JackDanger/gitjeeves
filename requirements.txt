@@ -3,3 +3,4 @@ chromadb
 torch
 tqdm
 transformers
+radon
