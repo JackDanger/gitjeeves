@@ -26,6 +26,14 @@ def load_model_and_tokenizer(model_name):
         print("Try: huggingface-cli login")
         sys.exit(1)
 
+
+def get_collection():
+    client = PersistentClient()
+    embedding_function = HuggingFaceEmbeddingFunction(MODEL_NAME)
+    collection = client.get_or_create_collection("git_repos", embedding_function=embedding_function)
+    return collection
+
+
 # Function to calculate cyclomatic complexity
 def calculate_complexity(code):
     complexity = radon_cc.cc_visit(code)
@@ -38,12 +46,9 @@ def calculate_code_churn(old_code, new_code):
 
 # Function to ingest Git repos and store embeddings
 def ingest_repo(repo_dir, tokenizer, model):
-    client = PersistentClient()
-    embedding_function = HuggingFaceEmbeddingFunction(MODEL_NAME)
-    collection = client.get_or_create_collection("git_repos", embedding_function=embedding_function)
-
     repo = Repo(repo_dir)
     commits = list(repo.iter_commits())
+    collection = get_collection()
 
     # Get the set of already processed commit hashes
     processed_commits = set()
@@ -104,25 +109,16 @@ def ingest_repo(repo_dir, tokenizer, model):
                 collection.add(ids=[unique_id], embeddings=embeddings, metadatas=metadata)
 
 
-# Function to load the vector database
-def load_vector_db():
-    settings = Settings(
-        chroma_db_impl="sqlite", 
-        persist_directory=PERSIST_DIRECTORY
-    )
-    client = Client(settings)
-    collection = client.get_collection("git_repos")
-    return collection
-
 # Enhanced Querying for Specific Use Cases
 def query_repo(query, collection, tokenizer, model):
     query_tokens = tokenizer(query, return_tensors="pt")
     query_embedding = model(**query_tokens).last_hidden_state.mean(dim=1).detach().numpy()
-    results = collection.query(embeddings=query_embedding, top_k=5)
+    results = collection.query(query_embeddings=query_embedding, n_results=5)
 
     refined_results = []
+    from IPython.terminal.embed import embed; embed()
     for result in results:
-        metadata = result['metadata']
+        #metadata = result['metadata']
         code = metadata.get('code', '')
         if "def " in code and "OAuth" in code:  # Simple check for API functions and OAuth mentions
             refined_results.append(metadata)
@@ -151,7 +147,7 @@ def main():
 
     elif args.serve:
         # Serve mode
-        collection = load_vector_db()
+        collection = get_collection()
         print("Vector database loaded. Enter your queries below (multi-line input, Ctrl+D to submit):")
 
         while True:
